@@ -1,0 +1,14 @@
+target/
+/dist/
+/out/
+/evidence/
+# Local coordination and detailed machine-specific acceptance stay private.
+/PLAN.md
+/docs/PLAN-v*.md
+/docs/DETECTION-v*.md
+/docs/acceptance*.md
+/docs/dispatch*.md
+/docs/PACKAGE-README*.md
+/docs/README-v*.md
+*.log
+__pycache__/

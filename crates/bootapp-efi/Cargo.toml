@@ -1,0 +1,20 @@
+[package]
+name = "bootapp-efi"
+version = "0.2.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+bootapp-core = { path = "../bootapp-core" }
+
+[target.'cfg(target_os = "uefi")'.dependencies]
+uefi = { version = "=0.41.0", features = ["alloc", "global_allocator", "panic_handler"] }
+
+[[bin]]
+name = "bootapp-efi"
+path = "src/main.rs"
+
+[[bin]]
+name = "bootapp-payload"
+path = "src/payload.rs"

@@ -1,0 +1,12 @@
+[package]
+name = "bootapp-cli"
+version = "0.2.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[[bin]]
+name = "bootapp"
+path = "src/main.rs"
+
+[dependencies]
+bootapp-core = { path = "../bootapp-core" }

@@ -1,0 +1,15 @@
+[package]
+name = "bootapp-bios"
+version = "0.2.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+
+[workspace]
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+opt-level = "s"
+lto = false

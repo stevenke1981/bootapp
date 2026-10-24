@@ -1,0 +1,10 @@
+[workspace]
+members = ["crates/bootapp-core", "crates/bootapp-cli", "crates/bootapp-efi"]
+exclude = ["crates/bootapp-bios"]
+default-members = ["crates/bootapp-core", "crates/bootapp-cli"]
+resolver = "2"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1

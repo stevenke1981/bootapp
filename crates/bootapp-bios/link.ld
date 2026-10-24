@@ -1,0 +1,10 @@
+ENTRY(image_start)
+SECTIONS {
+  . = 0x10000;
+  .start : { KEEP(*(.start)) }
+  .text : { *(.text .text.*) }
+  .rodata : { *(.rodata .rodata.*) }
+  .data : { *(.data .data.*) }
+  .bss : { __bss_start = .; *(.bss .bss.* COMMON) __bss_end = .; }
+  /DISCARD/ : { *(.eh_frame*) *(.comment*) *(.note*) *(.got*) }
+}
