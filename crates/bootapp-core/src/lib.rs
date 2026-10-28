@@ -177,6 +177,7 @@ impl Config {
         if text.len() > MAX_CONFIG_BYTES {
             return Err(invalid(0, "configuration exceeds 64 KiB"));
         }
+        let text = text.strip_prefix('\u{feff}').unwrap_or(text);
         let mut timeout = 5;
         let mut default = None;
         let mut globals_seen = 0u8;
@@ -493,6 +494,13 @@ mod tests {
                 value
             );
         }
+    }
+
+    #[test]
+    fn accepts_leading_utf8_bom() {
+        let cfg = Config::parse(&format!("\u{feff}timeout=1\n{ENTRY}")).unwrap();
+        assert_eq!(cfg.timeout, 1);
+        assert!(Config::parse(&format!("{ENTRY}\u{feff}options=x\n")).is_err());
     }
 
     #[test]
