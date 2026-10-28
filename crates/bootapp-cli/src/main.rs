@@ -3,13 +3,18 @@ use std::{env, fs, io::Read, path::Path, process::ExitCode};
 
 mod scan;
 
-const HELP: &str = "BootApp 0.2 — Rust boot manager tools
+const HELP: &str = concat!(
+    "BootApp ",
+    env!("CARGO_PKG_VERSION"),
+    " — Rust boot manager tools
   bootapp validate <config>
   bootapp preview <config> <x86|x64|aarch64>
   bootapp stage <config> <x86|x64|aarch64> <manager.efi> <new-output-directory>
   bootapp scan <x86|x64|aarch64> <volume-directory>...
+  bootapp --version
 Scan reads mounted directories only; loader identification does not prove an OS boots.
-Stage creates a new removable-media directory. It never installs to disks or changes firmware.";
+Stage creates a new removable-media directory. It never installs to disks or changes firmware."
+);
 
 fn architecture(value: &str) -> Result<Architecture, String> {
     Architecture::parse(value).ok_or_else(|| format!("unknown architecture: {value}"))
@@ -18,14 +23,15 @@ fn architecture(value: &str) -> Result<Architecture, String> {
 fn read_config(path: &Path) -> Result<(Config, String), String> {
     let file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let mut data = Vec::new();
-    file.take(65537)
+    file.take(bootapp_core::MAX_CONFIG_BYTES as u64 + 1)
         .read_to_end(&mut data)
-        .map_err(|e| e.to_string())?;
-    if data.len() > 65536 {
-        return Err("configuration exceeds 64 KiB".into());
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    if data.len() > bootapp_core::MAX_CONFIG_BYTES {
+        return Err(format!("{}: configuration exceeds 64 KiB", path.display()));
     }
-    let text = String::from_utf8(data).map_err(|e| e.to_string())?;
-    let config = Config::parse(&text).map_err(|e| e.to_string())?;
+    let text = String::from_utf8(data)
+        .map_err(|_| format!("{}: configuration is not valid UTF-8", path.display()))?;
+    let config = Config::parse(&text).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok((config, text))
 }
 
@@ -71,7 +77,16 @@ fn stage(
         fs::write(output.join("EFI/BOOTAPP/bootapp.cfg"), text)?;
         Ok(())
     };
-    write().map_err(|e| format!("staging incomplete at {}: {e}", output.display()))?;
+    if let Err(e) = write() {
+        let cleanup = match fs::remove_dir_all(output) {
+            Ok(()) => "removed partial output",
+            Err(_) => "partial output may remain",
+        };
+        return Err(format!(
+            "staging failed at {}; {cleanup}: {e}",
+            output.display()
+        ));
+    }
     println!(
         "Staged {} in {}. Copy your configured target EFI applications onto this volume before booting.",
         arch.as_str(),
@@ -90,11 +105,16 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{HELP}");
             Ok(())
         }
+        [version] if version == "--version" || version == "-V" => {
+            println!("bootapp {}", env!("CARGO_PKG_VERSION"));
+            Ok(())
+        }
         [command, path] if command == "validate" => {
             let (config, _) = read_config(Path::new(path))?;
             println!(
-                "Valid: {} entries, timeout {} seconds",
+                "Valid: {} entries, default '{}', timeout {} seconds",
                 config.entries.len(),
+                config.default,
                 config.timeout
             );
             Ok(())
@@ -106,6 +126,14 @@ fn run(args: &[String]) -> Result<(), String> {
             let default = config
                 .default_index(arch)
                 .ok_or("no entries for this architecture")?;
+            if !entries.iter().any(|entry| entry.id == config.default) {
+                eprintln!(
+                    "note: default entry '{}' is not available for {}; using '{}'",
+                    config.default,
+                    arch.as_str(),
+                    entries[default].id
+                );
+            }
             println!("BootApp | {} | timeout {}s", arch.as_str(), config.timeout);
             for (index, entry) in entries.iter().enumerate() {
                 println!(
@@ -172,6 +200,17 @@ fn main() -> ExitCode {
 mod tests {
     use super::*;
 
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn config_error(path: &Path) -> String {
+        match read_config(path) {
+            Ok(_) => panic!("{} unexpectedly parsed", path.display()),
+            Err(error) => error,
+        }
+    }
+
     pub(crate) fn pe(arch: Architecture) -> Vec<u8> {
         let mut bytes = vec![0u8; 256];
         bytes[..2].copy_from_slice(b"MZ");
@@ -231,5 +270,92 @@ mod tests {
         assert!(stage(&cfg, Architecture::X64, &binary, &new_output).is_err());
         assert_eq!(fs::read(image_path).unwrap(), b"preserve me");
         fs::remove_dir_all(path).unwrap();
+    }
+
+    #[test]
+    fn version_and_help_flags() {
+        for ok in [&["--version"][..], &["-V"], &["--help"], &["-h"], &[]] {
+            assert!(run(&args(ok)).is_ok(), "{ok:?}");
+        }
+        assert!(run(&args(&["bogus"])).is_err());
+        assert!(run(&args(&["validate"])).is_err());
+        assert!(HELP.starts_with(concat!("BootApp ", env!("CARGO_PKG_VERSION"))));
+        assert!(HELP.contains("--version"));
+    }
+
+    #[test]
+    fn read_config_errors_name_the_path() {
+        let dir = env::temp_dir().join(format!("bootapp-read-config-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let valid = "[entry test]\ntitle=Test\npath=\\EFI\\test.efi\n";
+
+        let missing = dir.join("missing.cfg");
+        let err = config_error(&missing);
+        assert!(err.contains(&missing.display().to_string()), "{err}");
+
+        let bad_utf8 = dir.join("bad-utf8.cfg");
+        fs::write(&bad_utf8, [0xffu8, 0xfe, 0x00]).unwrap();
+        let err = config_error(&bad_utf8);
+        assert!(err.contains(&bad_utf8.display().to_string()), "{err}");
+        assert!(err.contains("not valid UTF-8"), "{err}");
+
+        let oversized = dir.join("oversized.cfg");
+        fs::write(&oversized, vec![b' '; bootapp_core::MAX_CONFIG_BYTES + 1]).unwrap();
+        let err = config_error(&oversized);
+        assert!(err.contains(&oversized.display().to_string()), "{err}");
+        assert!(err.contains("exceeds 64 KiB"), "{err}");
+
+        let unknown_key = dir.join("unknown-key.cfg");
+        fs::write(&unknown_key, "wrong=1\n").unwrap();
+        let err = config_error(&unknown_key);
+        assert!(err.contains(&unknown_key.display().to_string()), "{err}");
+        assert!(err.contains("line 1"), "{err}");
+
+        let bom = dir.join("bom.cfg");
+        let mut bom_bytes = vec![0xefu8, 0xbb, 0xbf];
+        bom_bytes.extend_from_slice(valid.as_bytes());
+        fs::write(&bom, bom_bytes).unwrap();
+        assert!(read_config(&bom).is_ok());
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn validate_and_preview_accept_default_fallback() {
+        let dir = env::temp_dir().join(format!("bootapp-preview-test-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+
+        let fallback = dir.join("fallback.cfg");
+        fs::write(
+            &fallback,
+            "default=arm\n[entry arm]\ntitle=Arm\npath=\\EFI\\arm.efi\narch=aarch64\n[entry common]\ntitle=Common\npath=\\EFI\\common.efi\n",
+        )
+        .unwrap();
+        let (config, _) = read_config(&fallback).unwrap();
+        let x64 = config.entries_for(Architecture::X64);
+        assert_eq!(
+            x64[config.default_index(Architecture::X64).unwrap()].id,
+            "common"
+        );
+        let arm = config.entries_for(Architecture::Aarch64);
+        assert_eq!(
+            arm[config.default_index(Architecture::Aarch64).unwrap()].id,
+            "arm"
+        );
+        let fallback = fallback.to_string_lossy().into_owned();
+        let fallback = fallback.as_str();
+        assert!(run(&args(&["validate", fallback])).is_ok());
+        assert!(run(&args(&["preview", fallback, "x64"])).is_ok());
+        assert!(run(&args(&["preview", fallback, "aarch64"])).is_ok());
+
+        let arm_only = dir.join("arm-only.cfg");
+        fs::write(
+            &arm_only,
+            "[entry arm]\ntitle=Arm\npath=\\EFI\\arm.efi\narch=aarch64\n",
+        )
+        .unwrap();
+        assert!(run(&args(&["preview", &arm_only.to_string_lossy(), "x64"])).is_err());
+
+        fs::remove_dir_all(dir).unwrap();
     }
 }
