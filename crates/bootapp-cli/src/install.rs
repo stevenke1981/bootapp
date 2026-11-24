@@ -110,17 +110,16 @@ fn at(esp: &Path, rel: &str) -> PathBuf {
 }
 
 fn is_link(metadata: &fs::Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
+    // Windows also treats junctions and other reparse points as links.
     #[cfg(windows)]
-    {
+    let reparse = {
         use std::os::windows::fs::MetadataExt;
         const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
         metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-    }
+    };
     #[cfg(not(windows))]
-    false
+    let reparse = false;
+    metadata.file_type().is_symlink() || reparse
 }
 
 /// Refuse if any existing component of `rel` under `esp` is a link/reparse point.

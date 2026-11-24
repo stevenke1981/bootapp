@@ -148,11 +148,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
         with:
-          targets: x86_64-unknown-uefi
+          targets: x86_64-unknown-uefi,aarch64-unknown-uefi
 
-      - name: Build x64 EFI and CLI
+      # test-autodiscovery.py uses the aarch64 payload as its wrong-architecture fixture.
+      - name: Build x64 + aarch64 EFI and CLI
         run: |
           cargo build --locked --release -p bootapp-efi --target x86_64-unknown-uefi
+          cargo build --locked --release -p bootapp-efi --target aarch64-unknown-uefi
           cargo build --locked --release -p bootapp-cli
 
       # TCG is slow on hosted runners, so the marker timeouts are raised above the script defaults.
@@ -217,7 +219,9 @@ jobs:
 
       # Keys are generated fresh on the runner and never uploaded (no upload step in this job).
       - name: Generate throwaway keys
-        run: python3 scripts/sign-efi.py keys --out out/keys --cn "BootApp CI"
+        run: |
+          mkdir -p out
+          python3 scripts/sign-efi.py keys --out out/keys --cn "BootApp CI"
 
       - name: Sign EFI binary
         run: |

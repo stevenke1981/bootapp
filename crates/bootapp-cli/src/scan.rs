@@ -34,16 +34,15 @@ pub(crate) struct ScanReport {
 }
 
 fn is_link(metadata: &Metadata) -> bool {
-    if metadata.file_type().is_symlink() {
-        return true;
-    }
+    // Windows also treats junctions and other reparse points as links.
     #[cfg(windows)]
-    {
+    let reparse = {
         use std::os::windows::fs::MetadataExt;
         metadata.file_attributes() & 0x400 != 0
-    }
+    };
     #[cfg(not(windows))]
-    false
+    let reparse = false;
+    metadata.file_type().is_symlink() || reparse
 }
 
 fn canonical_volume(path: &Path) -> Result<PathBuf, String> {

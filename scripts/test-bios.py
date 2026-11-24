@@ -103,7 +103,7 @@ def main():
     a = p.parse_args()
     root = pathlib.Path(__file__).resolve().parents[1]
     asm = root / 'crates' / 'bootapp-bios' / 'asm'
-    run = (a.out or root / 'out') / f'test-{a.case}-{a.accel}-{time.time_ns()}'
+    run = (a.out or root / 'out').resolve() / f'test-{a.case}-{a.accel}-{time.time_ns()}'
     run.mkdir(parents=True)
     own_disk = a.case in OWN_DISK_CASES
     expected_entry = stale_entry = None
