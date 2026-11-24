@@ -120,7 +120,8 @@ v0.3 的 BIOS 測試改用 `-cpu pentium3,+sse2`，並新增不含 SSE2 的拒�
   本專案在開發環境中未對實體硬碟或主機韌體執行寫入。
 - 未簽章開發版本需在允許載入的韌體政策下使用。
 - 尚未執行（NOT_RUN）：實體硬體、Secure Boot 實機開機、真正 macOS 開機、
-  真正 Linux kernel EFI-stub 開機、WHPX／KVM 加速、託管 CI 尚未在 GitHub 上執行。
+  真正 Linux kernel EFI-stub 開機、WHPX／KVM 加速。
+  GitHub Actions 託管 CI（Linux 與 Windows，含 QEMU 測試）已全數通過。
 
 ## 規格與授權
 

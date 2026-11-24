@@ -75,7 +75,7 @@ functional cases were run under TCG only, with `-cpu pentium3,+sse2` (the `no-ss
 | BootOrder run 2: same private NVRAM, firmware boots that Boot####; `F` reuses it, order keeps earlier numbers | `... test-bootorder.py ...` (run 2 of the same script) | PASS — BootCurrent 0003; Boot0003 reused |
 | UEFI install round trip (dry run, apply with fallback and config, boot, uninstall, tree equal to pre-install) | `python scripts/test-uefi-install.py --qemu-dir <qemu-dir> --bootapp target/release/bootapp.exe --no-build --out out/runs` | PASS — payload options asserted; tampered manifest refused |
 | UEFI install round trip with a pre-existing `EFI\BOOT\BOOTX64.EFI` (backup and restore of the vendor loader) | `python scripts/test-uefi-install.py --qemu-dir <qemu-dir> --bootapp target/release/bootapp.exe --no-build --existing-fallback --out out/runs` | PASS |
-| Secure Boot signing helper (throwaway keys, sign, sbverify; CI job only) | `python scripts/sign-efi.py keys|sign|verify` (see [SECURE-BOOT.md](SECURE-BOOT.md)) | NOT_RUN locally (tools absent on Windows host; CI job not yet run) |
+| Secure Boot signing helper (throwaway keys, sign, sbverify; CI job only) | `python scripts/sign-efi.py keys|sign|verify` (see [SECURE-BOOT.md](SECURE-BOOT.md)) | PASS in hosted CI (run 45420248854, ubuntu-latest: keys, sbsign, sbverify); not run locally |
 
 The payloads in the UEFI tests are BootApp's own acceptance fixtures with a marker substituted to
 show which volume ran. No operating system or real kernel is booted by these tests.
@@ -114,8 +114,15 @@ These are not claimed by v0.3:
 - macOS actual OS boot and APFS/HFS+ driver behaviour: path fixtures only.
 - Real Linux kernel EFI-stub boot via GRUB entries: the GRUB tests use BootApp's fixture payload.
 - WHPX and KVM acceleration: the BIOS real-mode fix was checked statically and under TCG only.
-- Hosted CI: `.github/workflows/ci.yml` is new in v0.3 and has not been run on GitHub from this
-  repository (no push was made for this validation).
+
+## 5a. Hosted CI
+
+GitHub Actions run 45420248854 (commit c82a424, 2026-11-24): all 5 jobs PASS — rust on
+ubuntu-latest and windows-latest, BIOS image + QEMU cases + install round trip, UEFI QEMU cases
+(qemu-smoke x64, autodiscovery, GRUB, BootOrder, UEFI install with Ubuntu OVMF 4M), and
+Secure Boot signing with throwaway keys. The first run (45419113497) failed on four CI-only
+issues fixed in c82a424 (clippy 1.100 lint, relative `--out`, missing aarch64 fixture build,
+missing `out/` directory).
 
 ## 6. Reproduce
 

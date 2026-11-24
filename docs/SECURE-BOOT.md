@@ -96,7 +96,7 @@ Without WSL or MSYS2, `sign-efi.py` prints the missing tools and exits with stat
 | Item | Status |
 |---|---|
 | `sign-efi.py` argument parsing and refusal paths (overwrite, in-place sign, existing key directory) | Checked with stubbed tools on Windows. Real tool calls NOT_RUN on Windows. |
-| CI job `secure-boot-sign` (keys, sign, `sbverify`) | Defined in `.github/workflows/ci.yml`. Passes only when a CI run is green. NOT_RUN in this environment (no push). |
+| CI job `secure-boot-sign` (keys, sign, `sbverify`) | PASS in GitHub Actions run 45420248854 (throwaway keys; `sbverify` OK). |
 | BootApp booting under Secure Boot in QEMU (OVMF secure-code image) | NOT_RUN |
 | Enrollment and boot on real hardware | NOT_RUN |
 
