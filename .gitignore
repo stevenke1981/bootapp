@@ -12,3 +12,5 @@ target/
 /docs/README-v*.md
 *.log
 __pycache__/
+# Local tool attachments (screenshots shared with coding assistants)
+/.codex-attachments/
