@@ -1,0 +1,231 @@
+# BootApp CI. Builds, lints, and boots the images in QEMU. No secrets, no deploy, no publishing.
+# Read-only token: the workflow never writes to the repository.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Shared QEMU firmware paths used by the uefi-qemu job (Ubuntu OVMF package layout).
+  OVMF_CODE: /usr/share/OVMF/OVMF_CODE_4M.fd
+  OVMF_VARS: /usr/share/OVMF/OVMF_VARS_4M.fd
+
+jobs:
+  rust:
+    name: rust (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+          targets: i686-unknown-uefi,x86_64-unknown-uefi,aarch64-unknown-uefi
+
+      - name: Format check (workspace)
+        run: cargo fmt --all -- --check
+
+      - name: Format check (bootapp-bios, outside the workspace)
+        shell: bash
+        run: rustfmt --edition 2024 --check crates/bootapp-bios/src/*.rs
+
+      - name: Workspace tests
+        run: cargo test --locked --workspace
+
+      - name: Workspace clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: UEFI clippy (i686, x86_64, aarch64)
+        run: |
+          cargo clippy --locked -p bootapp-efi --target i686-unknown-uefi -- -D warnings
+          cargo clippy --locked -p bootapp-efi --target x86_64-unknown-uefi -- -D warnings
+          cargo clippy --locked -p bootapp-efi --target aarch64-unknown-uefi -- -D warnings
+
+      - name: UEFI release builds (i686, x86_64, aarch64)
+        run: |
+          cargo build --locked --release -p bootapp-efi --target i686-unknown-uefi
+          cargo build --locked --release -p bootapp-efi --target x86_64-unknown-uefi
+          cargo build --locked --release -p bootapp-efi --target aarch64-unknown-uefi
+
+      - name: BIOS timer unit tests (host rustc, bootapp-bios is outside the workspace)
+        shell: bash
+        run: |
+          set -euo pipefail
+          exe="$RUNNER_TEMP/bios-timer-tests"
+          if [ "$RUNNER_OS" = "Windows" ]; then exe="$exe.exe"; fi
+          rustc --edition=2024 --test crates/bootapp-bios/src/timer.rs -o "$exe"
+          "$exe"
+
+  bios:
+    name: bios image and QEMU tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install NASM (ndisasm included) and QEMU
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm qemu-system-x86
+          command -v nasm ndisasm qemu-system-i386
+          nasm -v
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,llvm-tools
+          targets: i686-unknown-linux-gnu
+
+      - name: BIOS crate clippy
+        run: cargo clippy --locked --manifest-path crates/bootapp-bios/Cargo.toml --target i686-unknown-linux-gnu -- -D warnings
+
+      - name: Build BIOS image (writes out/bios/stage1.bin, stage2.o, stage2.elf, stage2.bin, bootapp-bios.img)
+        run: python3 scripts/build-bios.py --nasm "$(command -v nasm)" --output out/bios
+
+      - name: Real-mode addressing lint (linked stage2.elf)
+        run: |
+          python3 scripts/check-bios-realmode.py \
+            --ndisasm "$(command -v ndisasm)" --nasm "$(command -v nasm)" \
+            --elf out/bios/stage2.elf
+
+      - name: BIOS QEMU cases
+        run: |
+          set -euo pipefail
+          for case in auto keyboard empty own-partition saved-mbr; do
+            echo "::group::test-bios case $case"
+            python3 scripts/test-bios.py --qemu-dir /usr/bin --nasm "$(command -v nasm)" \
+              --image out/bios/bootapp-bios.img --case "$case" --out out/runs
+            echo "::endgroup::"
+          done
+
+      - name: Build CLI
+        run: cargo build --locked --release -p bootapp-cli
+
+      - name: BIOS install tests (image files only)
+        run: |
+          python3 scripts/test-bios-install.py --qemu-dir /usr/bin --nasm "$(command -v nasm)" \
+            --bios-image out/bios/bootapp-bios.img --bootapp target/release/bootapp \
+            --out out/runs --timeout 180
+
+      - name: Upload out/ on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bios-failure-logs
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  uefi-qemu:
+    name: UEFI QEMU tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install QEMU and OVMF
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 qemu-utils ovmf
+
+      - name: Show OVMF files present on this runner
+        run: |
+          ls -la /usr/share/OVMF || true
+          ls -la "$OVMF_CODE" "$OVMF_VARS"
+          ls -la /dev/kvm 2>/dev/null || echo "no /dev/kvm: QEMU will use TCG"
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi
+
+      - name: Build x64 EFI and CLI
+        run: |
+          cargo build --locked --release -p bootapp-efi --target x86_64-unknown-uefi
+          cargo build --locked --release -p bootapp-cli
+
+      # TCG is slow on hosted runners, so the marker timeouts are raised above the script defaults.
+      - name: qemu-smoke x64 cases
+        run: |
+          set -euo pipefail
+          for case in auto missing self keyboard invalid; do
+            echo "::group::qemu-smoke case $case"
+            python3 scripts/qemu-smoke.py --qemu-dir /usr/bin --arch x64 --case "$case" \
+              --firmware-code "$OVMF_CODE" --firmware-vars "$OVMF_VARS" --out out/runs --timeout 180
+            echo "::endgroup::"
+          done
+
+      - name: Auto-discovery test
+        run: |
+          python3 scripts/test-autodiscovery.py --qemu-dir /usr/bin \
+            --firmware-code "$OVMF_CODE" --firmware-vars "$OVMF_VARS" --out out/runs --timeout 240
+
+      - name: GRUB subset test (all cases)
+        run: |
+          python3 scripts/test-grub.py --qemu-dir /usr/bin --case all \
+            --firmware-code "$OVMF_CODE" --firmware-vars "$OVMF_VARS" --out out/runs --timeout 240
+
+      - name: BootOrder test
+        run: |
+          python3 scripts/test-bootorder.py --qemu-dir /usr/bin \
+            --firmware-code "$OVMF_CODE" --firmware-vars "$OVMF_VARS" --out out/runs --timeout 240
+
+      - name: UEFI install test (ESP directory image, dry-run default; EFI binaries already built above)
+        run: |
+          python3 scripts/test-uefi-install.py --qemu-dir /usr/bin \
+            --firmware-code "$OVMF_CODE" --firmware-vars "$OVMF_VARS" \
+            --bootapp target/release/bootapp --no-build --out out/runs --timeout 240
+
+      - name: Upload out/ on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: uefi-qemu-failure-logs
+          path: out/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  secure-boot-sign:
+    name: Secure Boot signing (throwaway keys)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install signing tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y sbsigntool openssl efitools
+          command -v sbsign sbverify openssl cert-to-efi-sig-list sign-efi-sig-list
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-uefi
+
+      - name: Build x64 EFI
+        run: cargo build --locked --release -p bootapp-efi --target x86_64-unknown-uefi
+
+      # Keys are generated fresh on the runner and never uploaded (no upload step in this job).
+      - name: Generate throwaway keys
+        run: python3 scripts/sign-efi.py keys --out out/keys --cn "BootApp CI"
+
+      - name: Sign EFI binary
+        run: |
+          mkdir -p out/signed
+          python3 scripts/sign-efi.py sign \
+            --key out/keys/db.key --cert out/keys/db.crt \
+            --in target/x86_64-unknown-uefi/release/bootapp-efi.efi \
+            --out out/signed/BOOTX64.EFI
+
+      - name: Verify signature with sbverify
+        run: sbverify --cert out/keys/db.crt out/signed/BOOTX64.EFI
