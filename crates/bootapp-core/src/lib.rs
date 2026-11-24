@@ -3,12 +3,17 @@
 extern crate alloc;
 
 pub mod detection;
+pub mod grub;
+pub mod loadopt;
 
 use alloc::{string::String, vec::Vec};
 use core::fmt;
 
 pub const MAX_CONFIG_BYTES: usize = 64 * 1024;
 pub const MAX_ENTRIES: usize = 128;
+/// `Config::timeout` / `MenuState::new` value meaning "wait for a key forever"
+/// (GRUB `set timeout=-1`). bootapp.cfg itself still accepts only 0..=3600.
+pub const TIMEOUT_DISABLED: u32 = u32::MAX;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Architecture {
@@ -36,13 +41,34 @@ impl Architecture {
     }
 }
 
+/// Which firmware filesystem volume an entry's `path` is resolved on.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum VolumeSelector {
+    /// The boot manager's own volume (all bootapp.cfg entries).
+    #[default]
+    Own,
+    /// First volume, in discovery order, on which this absolute backslash path
+    /// exists (GRUB `search --file`).
+    File(String),
+    /// FAT volume serial written `XXXX-XXXX`, compared case-insensitively
+    /// (GRUB `search --fs-uuid`).
+    FsUuid(String),
+    /// Filesystem volume label, compared case-insensitively (GRUB `search --label`).
+    Label(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
     pub id: String,
     pub title: String,
+    /// Absolute backslash path. bootapp.cfg requires `validate_efi_path`;
+    /// GRUB-derived entries (e.g. Linux EFI-stub kernels) use `validate_volume_path`.
     pub path: String,
     pub arch: Option<Architecture>,
+    /// UTF-8 load options passed to the image as UTF-16 (kernel command line,
+    /// including `initrd=` arguments for Linux EFI-stub entries).
     pub options: String,
+    pub volume: VolumeSelector,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -73,12 +99,31 @@ fn invalid(line: usize, message: &'static str) -> ConfigError {
     ConfigError { line, message }
 }
 
-fn valid_id(id: &str) -> bool {
+pub(crate) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 64
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Like `validate_efi_path` but without the `.efi` extension requirement, for
+/// EFI-stub kernels and initrds such as `\vmlinuz-6.12` (GRUB `linux`/`initrd`).
+pub fn validate_volume_path(path: &str) -> bool {
+    if !path.starts_with('\\')
+        || path.len() > 1024
+        || path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
+    {
+        return false;
+    }
+    path[1..].split('\\').all(|component| {
+        !component.is_empty()
+            && component != "."
+            && component != ".."
+            && !component.ends_with([' ', '.'])
+    })
 }
 
 /// Validate an absolute path within a firmware filesystem volume.
@@ -125,6 +170,7 @@ impl PendingEntry {
                 path: String::new(),
                 arch: None,
                 options: String::new(),
+                volume: VolumeSelector::Own,
             },
             seen: 0,
             line,
@@ -335,7 +381,11 @@ impl MenuState {
             } else {
                 0
             },
-            remaining: if len == 0 { None } else { Some(timeout) },
+            remaining: if len == 0 || timeout == TIMEOUT_DISABLED {
+                None
+            } else {
+                Some(timeout)
+            },
         }
     }
 

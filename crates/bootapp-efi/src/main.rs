@@ -1,13 +1,20 @@
 #![cfg_attr(target_os = "uefi", no_std)]
 #![cfg_attr(target_os = "uefi", no_main)]
 
-#[cfg(target_os = "uefi")]
 extern crate alloc;
+
+#[cfg(target_os = "uefi")]
+mod bootorder;
 mod discovery_policy;
 #[cfg(target_os = "uefi")]
 mod firmware;
 #[cfg(target_os = "uefi")]
 mod runtime_support;
+#[cfg(target_os = "uefi")]
+mod trace;
+mod volume_policy;
+#[cfg(target_os = "uefi")]
+mod volumes;
 
 #[cfg(target_os = "uefi")]
 #[uefi::entry]

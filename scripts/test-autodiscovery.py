@@ -9,6 +9,7 @@ import argparse
 from collections import Counter
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -30,6 +31,7 @@ UNCLASSIFIED = r"\EFI\arbitrary\boot.efi"
 BAD_UUID = r"\not-a-uuid\System\Library\CoreServices\boot.efi"
 MARKER_ONE = "BOOTAPP_VOL_ONE_OK"
 MARKER_TWO = "BOOTAPP_VOL_TWO_OK"
+EXE = ".exe" if os.name == "nt" else ""
 DETECTED = re.compile(r"BOOTAPP_DETECTED ([^\r\n]+?) volume=(\d+) handle=([^\r\n]+?) path=([^\r\n]+)")
 
 
@@ -60,19 +62,25 @@ def log_text(directory):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--qemu-dir", required=True, type=Path)
+    parser.add_argument("--qemu-dir", type=Path, default=os.environ.get("BOOTAPP_QEMU_DIR"),
+                        required="BOOTAPP_QEMU_DIR" not in os.environ)
     parser.add_argument("--project-root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--out", type=Path, help="run directory parent (default: <project-root>/out)")
+    parser.add_argument("--firmware-code", type=Path, help="default: <qemu-dir>/share/edk2-x86_64-code.fd")
+    parser.add_argument("--firmware-vars", type=Path, help="optional vars TEMPLATE; a private copy is attached")
     parser.add_argument("--timeout", type=float, default=120)
+    parser.add_argument("--keep-images", action="store_true", help="keep generated *.img / vars.fd files")
     args = parser.parse_args()
     root = args.project_root.resolve()
-    qemu_dir = args.qemu_dir.resolve()
+    qemu_dir = Path(args.qemu_dir).resolve()
+    code = (args.firmware_code or qemu_dir / "share/edk2-x86_64-code.fd").resolve()
     manager = root / "target/x86_64-unknown-uefi/release/bootapp-efi.efi"
     payload = root / "target/x86_64-unknown-uefi/release/bootapp-payload.efi"
     foreign = root / "target/aarch64-unknown-uefi/release/bootapp-payload.efi"
-    for path in (manager, payload, foreign, qemu_dir / "qemu-img.exe", qemu_dir / "qemu-system-x86_64.exe"):
+    for path in (manager, payload, foreign, code, qemu_dir / f"qemu-img{EXE}", qemu_dir / f"qemu-system-x86_64{EXE}"):
         if not path.is_file():
             parser.error(f"Required regular file is missing: {path}")
-    directory = root / "evidence/raw" / f"autodiscovery-{time.time_ns()}"
+    directory = (args.out or root / "out").resolve() / f"autodiscovery-{time.time_ns()}"
     directory.mkdir(parents=True, exist_ok=False)
     report = {
         "result": "FAIL", "fixture_only": True,
@@ -129,16 +137,20 @@ def main():
             "foreign_payload": hashlib.sha256(foreign.read_bytes()).hexdigest(),
         }
         for name in ("manager", "volume-one", "volume-two"):
-            subprocess.run([str(qemu_dir / "qemu-img.exe"), "convert", "-f", "vvfat", f"fat:{name}",
+            subprocess.run([str(qemu_dir / f"qemu-img{EXE}"), "convert", "-f", "vvfat", f"fat:{name}",
                             "-O", "raw", f"{name}.img"], cwd=directory, check=True, timeout=45)
+            shutil.rmtree(directory / name)
         with socket.socket() as probe:
             probe.bind(("127.0.0.1", 0))
             port = probe.getsockname()[1]
-        command = [str(qemu_dir / "qemu-system-x86_64.exe"), "-name", "bootapp-autodiscovery-fixtures",
+        command = [str(qemu_dir / f"qemu-system-x86_64{EXE}"), "-name", "bootapp-autodiscovery-fixtures",
                    "-machine", "q35", "-accel", "tcg", "-m", "256", "-display", "none",
                    "-serial", "file:serial.log", "-monitor", "none", "-nic", "none", "-no-reboot",
                    "-qmp", f"tcp:127.0.0.1:{port},server=on,wait=off", "-drive",
-                   f"if=pflash,format=raw,readonly=on,file={qemu_dir / 'share/edk2-x86_64-code.fd'}"]
+                   f"if=pflash,format=raw,unit=0,readonly=on,file={code}"]
+        if args.firmware_vars:
+            shutil.copyfile(args.firmware_vars, directory / "vars.fd")
+            command += ["-drive", f"if=pflash,format=raw,unit=1,file={directory / 'vars.fd'}"]
         for index, name in enumerate(("manager", "volume-one", "volume-two")):
             command += ["-drive", f"file={name}.img,format=raw,if=ide,index={index},snapshot=on"]
         report["command"] = command
@@ -231,6 +243,10 @@ def main():
                 process.wait(timeout=5)
             report["process_exit_code"] = process.returncode
         report["serial"] = log_text(directory)
+        if not args.keep_images:
+            for image in [*directory.glob("*.img"), directory / "vars.fd"]:
+                if image.exists():
+                    image.unlink()
         result_path = directory / "result.json"
         result_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
         print(json.dumps({"result": report["result"], "report": str(result_path),
